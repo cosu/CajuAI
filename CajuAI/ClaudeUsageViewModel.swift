@@ -12,7 +12,9 @@ class ClaudeUsageViewModel {
     var isLoading = false
     var error: String?
     var lastUpdated: Date?
+    var lastUsageChange: Date?
     var authURLOpened = false
+    private var lastUsageSignature: String?
 
     private let service = ClaudeUsageService.shared
     private var autoRefreshTask: Task<Void, Never>?
@@ -65,6 +67,8 @@ class ClaudeUsageViewModel {
         usage = nil
         profile = nil
         lastUpdated = nil
+        lastUsageChange = nil
+        lastUsageSignature = nil
         error = nil
         authURLOpened = false
         stopAutoRefresh()
@@ -94,6 +98,7 @@ class ClaudeUsageViewModel {
                 profile = try await service.fetchProfile()
             }
             usage = try await service.fetchUsage()
+            recordUsageChange(usageSignature)
             lastUpdated = Date()
             apiSuccessCount += 1
         } catch ClaudeAuthError.notAuthenticated {
@@ -147,6 +152,22 @@ class ClaudeUsageViewModel {
     var menuBarLabel: String {
         guard let utilization = usage?.fiveHour?.utilization else { return "" }
         return String(format: "%.0f%%", utilization)
+    }
+
+    var menuBarUsage: MenuBarUsage {
+        MenuBarUsage(text: menuBarLabel, systemImage: "c.circle.fill", changedAt: lastUsageChange)
+    }
+
+    private var usageSignature: String? {
+        guard let utilization = usage?.fiveHour?.utilization else { return nil }
+        return String(format: "%.1f", utilization)
+    }
+
+    private func recordUsageChange(_ signature: String?) {
+        if let previous = lastUsageSignature, previous != signature {
+            lastUsageChange = Date()
+        }
+        lastUsageSignature = signature
     }
 
     // MARK: - Login Item

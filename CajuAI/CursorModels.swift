@@ -20,15 +20,38 @@ struct CursorBillingInfo: Decodable {
     let isYearlyPlan: Bool
     let isTeamMember: Bool
     let teamMembershipType: String?
+}
 
-    /// Monthly fast-request budget for this plan.
-    var fastRequestLimit: Double {
-        switch membershipType.lowercased() {
-        case "pro", "business": return 500
-        case "free":            return 50
-        default:                return 0   // usage-based — no hard cap
-        }
-    }
+// MARK: - Usage summary (Plans & Usage)
+
+struct CursorUsageSummary: Decodable {
+    let billingCycleStart: Date
+    let billingCycleEnd: Date
+    let membershipType: String
+    let isUnlimited: Bool?
+    let autoModelSelectedDisplayMessage: String?
+    let namedModelSelectedDisplayMessage: String?
+    let individualUsage: CursorIndividualUsage?
+}
+
+struct CursorIndividualUsage: Decodable {
+    let plan: CursorPlanUsage?
+    let onDemand: CursorOnDemandUsage?
+}
+
+struct CursorPlanUsage: Decodable {
+    let enabled: Bool?
+    let used: Double?
+    let limit: Double?
+    let autoPercentUsed: Double?
+    let apiPercentUsed: Double?
+    let totalPercentUsed: Double?
+}
+
+struct CursorOnDemandUsage: Decodable {
+    let enabled: Bool?
+    let used: Double?
+    let limit: Double?
 }
 
 // MARK: - Usage events
@@ -49,21 +72,20 @@ struct CursorUsageEvent {
 
 struct CursorUsageData {
     let billing: CursorBillingInfo
-    let fastRequestsUsed: Double              // sum of requestsCosts this period
-    let periodStart: Date
+    let billingCycleStart: Date
+    let billingCycleEnd: Date
+    let totalPercentUsed: Double
+    let autoPercentUsed: Double
+    let apiPercentUsed: Double
+    let displayMessage: String?
+    let onDemandEnabled: Bool
+    let onDemandUsed: Double
+    let isUnlimited: Bool
     let modelBreakdown: [(model: String, requests: Double, cents: Double)]
     let recentEvents: [CursorUsageEvent]
 
-    var fastRequestLimit: Double { billing.fastRequestLimit }
-    var hasLimit: Bool { fastRequestLimit > 0 }
-
     var usageFraction: Double {
-        guard hasLimit else { return 0 }
-        return fastRequestsUsed / fastRequestLimit
-    }
-
-    var totalCents: Double {
-        recentEvents.reduce(0) { $0 + $1.totalCents }
+        min(max(totalPercentUsed / 100, 0), 1)
     }
 }
 

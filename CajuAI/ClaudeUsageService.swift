@@ -17,20 +17,6 @@ class ClaudeUsageService {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private static let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
 
-    private let keychainService = "ro.cosu.CajuAI"
-    private let keychainAccount = "claude_tokens" // single item stores all token data
-
-    // Legacy UserDefaults keys — used only for one-time migration
-    private let legacyAccessTokenKey = "claude_access_token"
-    private let legacyRefreshTokenKey = "claude_refresh_token"
-    private let legacyExpiresAtKey = "claude_token_expires_at"
-
-    private struct StoredTokens: Codable {
-        var accessToken: String
-        var refreshToken: String?
-        var expiresAt: TimeInterval // Unix timestamp
-    }
-
     /// Stored during the OAuth flow so we can exchange the code later
     private(set) var pendingVerifier: String?
     private(set) var pendingState: String?
@@ -142,108 +128,27 @@ class ClaudeUsageService {
         return (trimmed, nil)
     }
 
-    // MARK: - Keychain Storage (single item, JSON encoded)
+    // MARK: - Token storage
 
-    private func keychainBaseQuery() -> [CFString: Any] {
-        [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: keychainAccount,
-            kSecAttrSynchronizable: false,
-        ]
+    private func saveStoredTokens(_ stored: KeychainStore.ClaudeTokens) {
+        KeychainStore.update { $0.claude = stored }
     }
 
-    private func saveStoredTokens(_ stored: StoredTokens) {
-        guard let data = try? JSONEncoder().encode(stored) else { return }
-        var query = keychainBaseQuery()
-        let updateFields: [CFString: Any] = [
-            kSecValueData: data,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        if SecItemUpdate(query as CFDictionary, updateFields as CFDictionary) == errSecItemNotFound {
-            query[kSecValueData] = data
-            query[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            SecItemAdd(query as CFDictionary, nil)
-        }
-    }
-
-    private func loadStoredTokens() -> StoredTokens? {
-        var query = keychainBaseQuery()
-        query[kSecReturnData] = true
-        query[kSecMatchLimit] = kSecMatchLimitOne
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(StoredTokens.self, from: data)
+    private func loadStoredTokens() -> KeychainStore.ClaudeTokens? {
+        KeychainStore.load().claude
     }
 
     func hasStoredToken() -> Bool {
-        migrateIfNeeded()
-        return loadStoredTokens() != nil
-    }
-
-    /// One-time migration from old UserDefaults storage and old multi-item Keychain storage.
-    private func migrateIfNeeded() {
-        guard loadStoredTokens() == nil else { return } // already migrated
-
-        let defaults = UserDefaults.standard
-        let accessToken = defaults.string(forKey: legacyAccessTokenKey)
-            ?? loadLegacyKeychainItem(account: legacyAccessTokenKey)
-
-        guard let accessToken else { return }
-
-        let refreshToken = defaults.string(forKey: legacyRefreshTokenKey)
-            ?? loadLegacyKeychainItem(account: legacyRefreshTokenKey)
-
-        var expiresAt: TimeInterval = Date().addingTimeInterval(3600).timeIntervalSince1970
-        if let expiresAtStr = defaults.string(forKey: legacyExpiresAtKey) ?? loadLegacyKeychainItem(account: legacyExpiresAtKey),
-           let interval = TimeInterval(expiresAtStr) {
-            expiresAt = interval
-        } else if let date = defaults.object(forKey: legacyExpiresAtKey) as? Date {
-            expiresAt = date.timeIntervalSince1970
-        }
-
-        saveStoredTokens(StoredTokens(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt))
-
-        // Clean up legacy storage
-        [legacyAccessTokenKey, legacyRefreshTokenKey, legacyExpiresAtKey].forEach {
-            defaults.removeObject(forKey: $0)
-            deleteLegacyKeychainItem(account: $0)
-        }
-    }
-
-    private func loadLegacyKeychainItem(account: String) -> String? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: false,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func deleteLegacyKeychainItem(account: String) {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: account,
-            kSecAttrSynchronizable: false,
-        ]
-        SecItemDelete(query as CFDictionary)
+        loadStoredTokens() != nil
     }
 
     private func storeTokens(_ response: TokenResponse) {
         let expiresAt = Date().addingTimeInterval(TimeInterval(response.expiresIn)).timeIntervalSince1970
-        saveStoredTokens(StoredTokens(accessToken: response.accessToken, refreshToken: response.refreshToken, expiresAt: expiresAt))
+        saveStoredTokens(KeychainStore.ClaudeTokens(accessToken: response.accessToken, refreshToken: response.refreshToken, expiresAt: expiresAt))
     }
 
     func clearTokens() {
-        SecItemDelete(keychainBaseQuery() as CFDictionary)
+        KeychainStore.update { $0.claude = nil }
     }
 
     // MARK: - Token Refresh

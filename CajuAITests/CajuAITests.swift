@@ -58,16 +58,52 @@ struct CursorTokenExtractionTests {
         #expect(userId == "user_ABC999")
     }
 
+    @Test func usageSummaryJSONMatchesPlansAndUsagePercent() throws {
+        let json = """
+        {
+          "billingCycleStart": "2026-08-31T09:11:17.000Z",
+          "billingCycleEnd": "2026-09-30T09:11:17.000Z",
+          "membershipType": "pro",
+          "limitType": "user",
+          "isUnlimited": false,
+          "autoModelSelectedDisplayMessage": "You've used 4% of your included total usage",
+          "namedModelSelectedDisplayMessage": "You've used 0% of your included API usage",
+          "individualUsage": {
+            "plan": {
+              "enabled": true,
+              "used": 1866,
+              "limit": 2000,
+              "remaining": 134,
+              "autoPercentUsed": 4.1466666666666665,
+              "apiPercentUsed": 0,
+              "totalPercentUsed": 3.7696969696969695
+            },
+            "onDemand": { "enabled": false, "used": 0, "limit": null, "remaining": null }
+          },
+          "teamUsage": {}
+        }
+        """.data(using: .utf8)!
+
+        let summary = try CursorService.decodeUsageSummary(json)
+        #expect(summary.membershipType == "pro")
+        let percent = summary.individualUsage?.plan?.totalPercentUsed ?? -1
+        #expect(abs(percent - 3.7696969696969695) < 0.0001)
+        #expect(Int(percent.rounded()) == 4)
+        // used/limit (1866/2000) is a different unit and must not drive the bar
+        #expect(summary.individualUsage?.plan?.used == 1866)
+        #expect(summary.individualUsage?.plan?.limit == 2000)
+    }
+
     // Integration test: reads token from DB then hits the live API.
     // Requires network access and a valid Cursor session.
     @Test func usageFetchFromAPI() async throws {
         let info = try CursorService.readToken()
         let service = CursorService()
         let usage = try await service.fetchUsage(tokenInfo: info)
-        #expect(usage.fastRequestsUsed >= 0)
+        #expect(usage.totalPercentUsed >= 0)
         #expect(usage.billing.subscriptionStatus == "active")
-        let daysSinceStart = Date().timeIntervalSince(usage.periodStart) / 86400
+        let daysSinceStart = Date().timeIntervalSince(usage.billingCycleStart) / 86400
         #expect(daysSinceStart >= 0 && daysSinceStart <= 60,
-                "periodStart should be recent, got \(usage.periodStart)")
+                "billingCycleStart should be recent, got \(usage.billingCycleStart)")
     }
 }

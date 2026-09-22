@@ -84,13 +84,15 @@ struct CursorService {
 
     func fetchUsage(tokenInfo: CursorTokenInfo) async throws -> CursorUsageData {
         async let billing = fetchBilling(tokenInfo: tokenInfo)
-        async let periodStart = fetchPeriodStart(tokenInfo: tokenInfo)
+        async let summary = fetchUsageSummary(tokenInfo: tokenInfo)
 
-        let (billingResult, start) = try await (billing, periodStart)
+        let (billingResult, summaryResult) = try await (billing, summary)
+        let plan = summaryResult.individualUsage?.plan
+        let onDemand = summaryResult.individualUsage?.onDemand
+        let start = summaryResult.billingCycleStart
 
         let events = try await fetchAllEvents(tokenInfo: tokenInfo, since: start)
 
-        // Aggregate by model
         var byModel: [String: (requests: Double, cents: Double)] = [:]
         for e in events {
             let cur = byModel[e.model] ?? (0, 0)
@@ -100,15 +102,36 @@ struct CursorService {
             .map { (model: $0.key, requests: $0.value.requests, cents: $0.value.cents) }
             .sorted { $0.requests > $1.requests }
 
-        let totalFast = events.reduce(0) { $0 + $1.requestsCosts }
-
         return CursorUsageData(
             billing: billingResult,
-            fastRequestsUsed: totalFast,
-            periodStart: start,
+            billingCycleStart: start,
+            billingCycleEnd: summaryResult.billingCycleEnd,
+            totalPercentUsed: plan?.totalPercentUsed ?? 0,
+            autoPercentUsed: plan?.autoPercentUsed ?? 0,
+            apiPercentUsed: plan?.apiPercentUsed ?? 0,
+            displayMessage: summaryResult.autoModelSelectedDisplayMessage,
+            onDemandEnabled: onDemand?.enabled ?? false,
+            onDemandUsed: onDemand?.used ?? 0,
+            isUnlimited: summaryResult.isUnlimited ?? false,
             modelBreakdown: breakdown,
             recentEvents: Array(events.prefix(20))
         )
+    }
+
+    static func decodeUsageSummary(_ data: Data) throws -> CursorUsageSummary {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let string = try decoder.singleValueContainer().decode(String.self)
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: string) { return date }
+            iso.formatOptions = [.withInternetDateTime]
+            if let date = iso.date(from: string) { return date }
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Invalid date: \(string)")
+            )
+        }
+        return try decoder.decode(CursorUsageSummary.self, from: data)
     }
 
     // MARK: - Private fetches
@@ -120,20 +143,9 @@ struct CursorService {
         return try decoder.decode(CursorBillingInfo.self, from: data)
     }
 
-    private func fetchPeriodStart(tokenInfo: CursorTokenInfo) async throws -> Date {
-        let data = try await get(
-            "https://cursor.com/api/usage?user=\(tokenInfo.userId)",
-            tokenInfo: tokenInfo
-        )
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = json["startOfMonth"] as? String else {
-            // Fall back to first of the current month
-            return Calendar.current.date(from: Calendar.current.dateComponents(
-                [.year, .month], from: Date()))!
-        }
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return iso.date(from: raw) ?? ISO8601DateFormatter().date(from: raw) ?? Date()
+    private func fetchUsageSummary(tokenInfo: CursorTokenInfo) async throws -> CursorUsageSummary {
+        let data = try await get("https://cursor.com/api/usage-summary", tokenInfo: tokenInfo)
+        return try Self.decodeUsageSummary(data)
     }
 
     private func fetchAllEvents(tokenInfo: CursorTokenInfo, since periodStart: Date) async throws -> [CursorUsageEvent] {

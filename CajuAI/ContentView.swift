@@ -7,25 +7,49 @@ import SwiftUI
 
 // MARK: - Root menu bar popover
 
-enum AppTab: String, CaseIterable {
-    case claude = "Claude"
-    case cursor = "Cursor"
+enum AppTab: CaseIterable {
+    case claude, cursor, deepseek, openrouter
+
+    var title: String {
+        switch self {
+        case .claude: "Claude"
+        case .cursor: "Cursor"
+        case .deepseek: "DeepSeek"
+        case .openrouter: "OpenRouter"
+        }
+    }
 }
 
 struct MenuBarView: View {
     @Environment(ClaudeUsageViewModel.self) var viewModel
     @Environment(CursorUsageViewModel.self) var cursorViewModel
+    @Environment(DeepSeekUsageViewModel.self) var deepSeekViewModel
+    @Environment(OpenRouterUsageViewModel.self) var openRouterViewModel
     @State private var selectedTab: AppTab = .claude
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Tab", selection: $selectedTab) {
+            HStack(spacing: 2) {
                 ForEach(AppTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Text(tab.title)
+                            .font(.system(size: 11))
+                            .fontWeight(.medium)
+                            .foregroundStyle(selectedTab == tab ? .primary : .secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(
+                                selectedTab == tab ? Color.primary.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 8)
             .padding(.top, 10)
             .padding(.bottom, 6)
 
@@ -40,13 +64,19 @@ struct MenuBarView: View {
                 }
             case .cursor:
                 CursorView()
+            case .deepseek:
+                DeepSeekView()
+            case .openrouter:
+                OpenRouterView()
             }
         }
-        .frame(width: 300)
+        .frame(width: 340)
         .onAppear {
             Task {
                 await viewModel.userOpenedPopover()
                 await cursorViewModel.userOpenedPopover()
+                await deepSeekViewModel.userOpenedPopover()
+                await openRouterViewModel.userOpenedPopover()
             }
         }
     }
@@ -301,7 +331,7 @@ struct LoginView: View {
                 TextField("https://console.anthropic.com/oauth/code/callback?code=…", text: $pastedInput, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
-                    .lineLimit(4)
+                    .lineLimit(6...12)
 
                 HStack(spacing: 8) {
                     Button("Back") {
@@ -434,28 +464,41 @@ struct CursorView: View {
                 // Fast requests bar (included in plan)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Included in \(usage.billing.membershipType.capitalized)")
+                        Text("Included usage")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        if usage.hasLimit {
-                            Text("\(Int(usage.fastRequestsUsed)) / \(Int(usage.fastRequestLimit))")
+                        if usage.isUnlimited {
+                            Text("Unlimited")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                        } else {
+                            Text(String(format: "%.0f%%", usage.totalPercentUsed))
                                 .font(.caption)
                                 .fontWeight(.medium)
                                 .foregroundStyle(usage.usageFraction >= 0.7 ? .red : usage.usageFraction >= 0.4 ? .yellow : .white)
                                 .monospacedDigit()
-                        } else {
-                            Text("\(Int(usage.fastRequestsUsed)) requests")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .monospacedDigit()
                         }
                     }
                     UsageProgressBar(fraction: usage.usageFraction)
+                    if let message = usage.displayMessage, !message.isEmpty {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                     HStack {
-                        Text("Period started \(usage.periodStart, style: .date)")
+                        Text("Cursor models \(String(format: "%.0f%%", usage.autoPercentUsed))")
                         Spacer()
-                        Text(String(format: "$%.2f compute", usage.totalCents / 100))
+                        Text("Other models \(String(format: "%.0f%%", usage.apiPercentUsed))")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    HStack {
+                        Text("Resets \(usage.billingCycleEnd, style: .date)")
+                        if usage.onDemandEnabled {
+                            Spacer()
+                            Text(String(format: "On-demand $%.2f", usage.onDemandUsed / 100))
+                        }
                     }
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -509,8 +552,344 @@ struct CursorView: View {
     }
 }
 
+// MARK: - DeepSeek view
+
+struct DeepSeekView: View {
+    @Environment(DeepSeekUsageViewModel.self) var viewModel
+    @State private var apiKeyInput = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DeepSeek Usage")
+                        .font(.headline)
+                }
+                Spacer()
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .rotationEffect(viewModel.isLoading ? .degrees(360) : .degrees(0))
+                        .animation(
+                            viewModel.isLoading
+                                ? .linear(duration: 1).repeatForever(autoreverses: false)
+                                : .default,
+                            value: viewModel.isLoading
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isLoading)
+            }
+
+            Divider()
+
+            if let error = viewModel.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if viewModel.isAuthenticated {
+                if let balance = viewModel.balance {
+                    ForEach(balance.balanceInfos, id: \.currency) { info in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Total Balance")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "%@ %.2f", info.currency, info.totalBalanceDouble))
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .monospacedDigit()
+                            }
+                            HStack {
+                                Text("Topped Up")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Text(String(format: "%@ %.2f", info.currency, info.toppedUpBalanceDouble))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            HStack {
+                                Text("Granted")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Text(String(format: "%@ %.2f", info.currency, info.grantedBalanceDouble))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+
+                    if !balance.isAvailable {
+                        Label("Balance too low for API calls", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    }
+                } else if !viewModel.isLoading {
+                    Text("No balance data available.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if viewModel.isLoading && viewModel.balance == nil {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                }
+
+                if let lastUpdated = viewModel.lastUpdated {
+                    Text("Updated \(lastUpdated, style: .relative) ago")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Divider()
+
+                HStack {
+                    Button("Remove Key") { viewModel.signOut() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                    Spacer()
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Enter your DeepSeek API key to monitor your account balance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    TextField("sk-...", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+
+                    Button("Save") {
+                        viewModel.saveKey(apiKeyInput)
+                        apiKeyInput = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                HStack {
+                    Text("Get your API key at platform.deepseek.com/api_keys")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Divider()
+
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+}
+
+// MARK: - OpenRouter view
+
+struct OpenRouterView: View {
+    @Environment(OpenRouterUsageViewModel.self) var viewModel
+    @State private var apiKeyInput = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OpenRouter Usage")
+                        .font(.headline)
+                    if let remaining = viewModel.usage?.credits.remaining {
+                        Text(String(format: "$%.2f remaining", remaining))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .rotationEffect(viewModel.isLoading ? .degrees(360) : .degrees(0))
+                        .animation(
+                            viewModel.isLoading
+                                ? .linear(duration: 1).repeatForever(autoreverses: false)
+                                : .default,
+                            value: viewModel.isLoading
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isLoading)
+            }
+
+            Divider()
+
+            if let error = viewModel.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if viewModel.isAuthenticated {
+                if let usage = viewModel.usage {
+                    let credits = usage.credits
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Account credits")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "$%.2f / $%.2f", credits.totalUsage, credits.totalCredits))
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(
+                                    credits.fraction >= 0.7 ? .red
+                                        : credits.fraction >= 0.4 ? .yellow
+                                        : .white
+                                )
+                                .monospacedDigit()
+                        }
+                        UsageProgressBar(fraction: credits.fraction)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        creditRow("Today", usage.usageDaily)
+                        creditRow("This week", usage.usageWeekly)
+                        creditRow("This month", usage.usageMonthly)
+                        if usage.byokUsage > 0 {
+                            creditRow("BYOK", usage.byokUsage)
+                        }
+                    }
+
+                    if !usage.rankedKeys.isEmpty {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("By key")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ForEach(usage.rankedKeys.prefix(6)) { key in
+                                HStack {
+                                    Text(key.displayName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(String(format: "$%.2f", key.usageMonthly ?? 0))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                }
+                            }
+                        }
+                    }
+                } else if !viewModel.isLoading {
+                    Text("No usage data available.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if viewModel.isLoading && viewModel.usage == nil {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                }
+
+                if let lastUpdated = viewModel.lastUpdated {
+                    Text("Updated \(lastUpdated, style: .relative) ago")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Divider()
+
+                HStack {
+                    Button("Remove Key") { viewModel.signOut() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                    Spacer()
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Enter an OpenRouter management key to monitor account credits and per-key usage. Regular inference keys will not work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    TextField("sk-or-v1-...", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+
+                    Button("Save") {
+                        viewModel.saveKey(apiKeyInput)
+                        apiKeyInput = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                HStack {
+                    Text("Create one at openrouter.ai/settings/keys")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Divider()
+
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+
+    private func creditRow(_ label: String, _ amount: Double) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(String(format: "$%.2f", amount))
+                .font(.caption)
+                .fontWeight(.medium)
+                .monospacedDigit()
+        }
+    }
+}
+
 #Preview {
     MenuBarView()
         .environment(ClaudeUsageViewModel())
         .environment(CursorUsageViewModel())
+        .environment(DeepSeekUsageViewModel())
+        .environment(OpenRouterUsageViewModel())
 }
