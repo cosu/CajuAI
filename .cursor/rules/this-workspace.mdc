@@ -1,0 +1,10 @@
+---
+description: Keep this Cursor workspace scoped to CajuAI only
+alwaysApply: true
+---
+
+# CajuAI
+
+This workspace is only `Documents/coding/CajuAI`. Do not search, read, or edit sibling projects under `Documents/coding` unless the user explicitly asks.
+
+macOS menu bar app showing Claude, Cursor, DeepSeek, and OpenRouter usage.

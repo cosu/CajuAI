@@ -1,0 +1,10 @@
+---
+description: Always rebuild and install CajuAI after a feature or bugfix
+alwaysApply: true
+---
+
+# Install after features and bugfixes
+
+After finishing a user-facing feature or bugfix, run `scripts/rebuild-install.sh` before considering the work done. Do not stop at `xcodebuild` compile-only. The script clean-builds Release, copies to `/Applications/CajuAI.app`, and relaunches.
+
+Skip install only for docs-only or non-code changes (for example `AGENTS.md` or comments with no binary change).
